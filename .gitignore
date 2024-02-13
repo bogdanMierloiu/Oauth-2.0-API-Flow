@@ -8,6 +8,11 @@
 # IntelliJ IDEA
 .idea/
 
+# Maven
+.mvn/
+mvnw
+mvnw.cmd
+
 # Eclipse project files
 .classpath
 .project
