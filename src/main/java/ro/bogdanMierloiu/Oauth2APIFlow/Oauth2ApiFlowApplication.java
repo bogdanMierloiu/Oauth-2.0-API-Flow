@@ -1,4 +1,4 @@
-package ro.bogdan_mierloiu.Oauth2APIFlow;
+package ro.bogdanMierloiu.Oauth2APIFlow;
 
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
