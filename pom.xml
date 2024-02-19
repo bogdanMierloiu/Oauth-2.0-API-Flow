@@ -8,7 +8,7 @@
 		<version>3.2.2</version>
 		<relativePath/> <!-- lookup parent from repository -->
 	</parent>
-	<groupId>ro.bogdan_mierloiu</groupId>
+	<groupId>ro.bogdanmierloiu</groupId>
 	<artifactId>Oauth-2-API-Flow</artifactId>
 	<version>0.0.1-SNAPSHOT</version>
 	<name>Oauth-2-API-Flow</name>
