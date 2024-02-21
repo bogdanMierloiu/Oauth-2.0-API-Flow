@@ -11,10 +11,8 @@ import ro.bogdanmierloiu.Oauth2APIFlow.repo.RoleRepo;
 import ro.bogdanmierloiu.Oauth2APIFlow.util.ErrorMessages;
 
 import java.util.HashSet;
-import java.util.List;
 import java.util.Set;
 import java.util.UUID;
-import java.util.stream.Collectors;
 
 @Service
 @RequiredArgsConstructor
@@ -71,7 +69,7 @@ public class RoleService implements CrudService<RoleRequest, RoleResponse> {
      */
     @Override
     public Set<RoleResponse> getAll() {
-        return RoleMapper.entityToDto(roleRepo.findAll().stream().collect(Collectors.toSet()));
+        return RoleMapper.entityToDto(new HashSet<>(roleRepo.findAll()));
     }
 
     /**
@@ -84,5 +82,12 @@ public class RoleService implements CrudService<RoleRequest, RoleResponse> {
         Role roleToDelete = roleRepo.findByUuid(uuid).orElseThrow(
                 () -> new NotFoundException(ErrorMessages.objectWithUuidNotFound(ROLE, uuid)));
         roleRepo.delete(roleToDelete);
+    }
+
+    public Role getMemberRole() {
+        return roleRepo.getMemberRole().orElse(
+                Role.builder()
+                        .name("MEMBER")
+                        .build());
     }
 }

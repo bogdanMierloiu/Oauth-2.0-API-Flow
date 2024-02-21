@@ -44,6 +44,11 @@ public class User {
             inverseJoinColumns = @JoinColumn(name = "product_id"))
     private Set<Product> products;
 
+    @PrePersist
+    public void prePersist() {
+        this.uuid = UUID.randomUUID();
+    }
+
     @Override
     public String toString() {
         return "User{" +
