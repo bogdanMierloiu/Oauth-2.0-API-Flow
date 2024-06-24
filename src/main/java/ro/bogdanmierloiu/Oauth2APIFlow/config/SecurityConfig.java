@@ -81,7 +81,7 @@ public class SecurityConfig {
      * @return the TrustedIssuer object
      */
     @Bean
-    @ConfigurationProperties(prefix = "local.issuer")
+    @ConfigurationProperties(prefix = "issuer")
     public TrustedIssuer localAuthServerIssuer() {
         return new TrustedIssuer();
     }

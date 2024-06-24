@@ -1,11 +1,19 @@
 package ro.bogdanmierloiu.Oauth2APIFlow.config;
 
+import com.auth0.jwt.JWT;
+import com.auth0.jwt.algorithms.Algorithm;
+import com.auth0.jwt.exceptions.SignatureVerificationException;
+import com.auth0.jwt.interfaces.DecodedJWT;
+import com.nimbusds.jose.jwk.JWK;
+import com.nimbusds.jose.jwk.JWKSet;
 import com.nimbusds.jose.proc.SecurityContext;
 import com.nimbusds.jwt.JWTClaimsSet;
 import com.nimbusds.jwt.SignedJWT;
 import com.nimbusds.jwt.proc.DefaultJWTProcessor;
+import jakarta.annotation.PostConstruct;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.boot.web.client.RestTemplateBuilder;
 import org.springframework.security.core.GrantedAuthority;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.security.oauth2.core.DefaultOAuth2AuthenticatedPrincipal;
@@ -13,13 +21,16 @@ import org.springframework.security.oauth2.core.OAuth2AuthenticatedPrincipal;
 import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.security.oauth2.jwt.JwtDecoder;
 import org.springframework.security.oauth2.jwt.NimbusJwtDecoder;
-import org.springframework.security.oauth2.server.resource.introspection.NimbusOpaqueTokenIntrospector;
 import org.springframework.security.oauth2.server.resource.introspection.OAuth2IntrospectionException;
 import org.springframework.security.oauth2.server.resource.introspection.OpaqueTokenIntrospector;
+import org.springframework.web.client.RestTemplate;
 import ro.bogdanmierloiu.Oauth2APIFlow.entity.Role;
 import ro.bogdanmierloiu.Oauth2APIFlow.entity.User;
 import ro.bogdanmierloiu.Oauth2APIFlow.service.UserService;
 
+import java.io.File;
+import java.io.FileNotFoundException;
+import java.io.PrintWriter;
 import java.text.ParseException;
 import java.util.*;
 import java.util.stream.Collectors;
@@ -29,61 +40,103 @@ public class TokenIntrospection implements OpaqueTokenIntrospector {
     private final JwtDecoder jwtDecoder;
     private final Map<String, LinkedList<TrustedIssuer>> trustedIssuers;
     private final UserService userService;
+    private final RestTemplate restTemplate;
 
-    @Value("${local.issuer.uri}")
-    private String issuerUriLocal;
+    @Value("${issuer.uri}")
+    private String issuerUri;
+
+    @Value("${spring.jwk.file.path}")
+    private String springJwkPath;
+
+    @Value("${springAuthServerKeysUri}")
+    private String springAuthServerKeysUri;
 
     public TokenIntrospection(UserService userService) {
+        this.restTemplate = new RestTemplateBuilder().build();
         this.userService = userService;
         this.trustedIssuers = new LinkedHashMap<>();
         this.jwtDecoder = new NimbusJwtDecoder(new ParseOnlyJWTProcessor());
     }
 
+    /***
+     * This method updates the JWK on startup.
+     */
+
+    @PostConstruct
+    public void updateJwkOnStartup() {
+        springAuthServerUpdateJwk();
+    }
+
+
     /**
-     * This method introspects the token and returns the principal object representing the user.
-     * It verifies the issuer of the token and delegates the introspection to the trusted issuer.
+     * This method verify the token and returns the principal object representing the user.
      *
-     * @param token The token to introspect
-     * @return The principal object representing the user
+     * @param token The token to verify
+     * @return The principal object representing the user from database
      */
     public OAuth2AuthenticatedPrincipal introspect(String token) {
         Jwt jwt = this.jwtDecoder.decode(token);
-        User user = userService.verifyExistAndSave(jwt);
+        User appUser = userService.verifyExistAndSave(jwt);
 
         String issuer = jwt.getClaimAsString("iss");
 
-        if (issuer.equals(issuerUriLocal)) {
-            return introspectToken(jwt, issuer, user.getRoles());
-        }
-        throw new OAuth2IntrospectionException("Issuer not trusted");
+        if (issuer.equals(issuerUri)) {
+            return springAuthServerIssuer(jwt, appUser.getRoles());
+        } else throw new OAuth2IntrospectionException("Issuer not trusted");
     }
 
     /**
-     * This method introspects the token and returns the principal object representing the user.
-     * It verifies the issuer of the token and delegates the introspection to the trusted issuer.
+     * This method verifies the token signature for Spring Auth Server.
+     * It verifies the signature of the token with public key from JWK.
+     * If the verification fails, it updates the JWK and tries again.
      *
-     * @param jwt    The JWT object containing the user data.
-     * @param issuer The issuer of the token.
-     * @param roles  The roles of the user.
-     * @return The principal object representing the user
+     * @jwtToken The JWT object representing the token to verify
+     * @role The roles of the user to be added to the principal object
      */
-    private OAuth2AuthenticatedPrincipal introspectToken(Jwt jwt, String issuer, Set<Role> roles) {
-        LinkedList<TrustedIssuer> clientsList = trustedIssuers.get(issuer);
-        if (clientsList == null) {
-            throw new OAuth2IntrospectionException("Issuer not trusted");
+    private OAuth2AuthenticatedPrincipal springAuthServerIssuer(Jwt jwtToken, Set<Role> role) {
+        try {
+            verifyTokenSignature(jwtToken, springJwkPath);
+            return new DefaultOAuth2AuthenticatedPrincipal(jwtToken.getClaims(), roleConverter(role));
+        } catch (SignatureVerificationException e) {
+            springAuthServerUpdateJwk();
+            verifyTokenSignature(jwtToken, springJwkPath);
+            return new DefaultOAuth2AuthenticatedPrincipal(jwtToken.getClaims(), roleConverter(role));
         }
-        for (TrustedIssuer trustedIssuer : clientsList) {
-            try {
-                OpaqueTokenIntrospector delegate =
-                        new NimbusOpaqueTokenIntrospector(trustedIssuer.getUri() +
-                                trustedIssuer.getIntrospectionEndpoint(), trustedIssuer.getClientId(), trustedIssuer.getClientSecret());
-                delegate.introspect(jwt.getTokenValue());
-                return new DefaultOAuth2AuthenticatedPrincipal(jwt.getClaims(), roleConverter(roles));
-            } catch (Exception ex) {
-                log.info("Issuer {} failed to validate the token", trustedIssuer.getUri());
-            }
+    }
+
+    /**
+     * This method verifies the token signature.
+     *
+     * @param jwtToken The JWT object representing the token to verify
+     * @param jwkPath  The path to the JWK file
+     */
+    private void verifyTokenSignature(Jwt jwtToken, String jwkPath) {
+        DecodedJWT jwt = JWT.decode(jwtToken.getTokenValue());
+        try {
+            JWKSet provider = JWKSet.load(new File(jwkPath));
+            JWK jwk = provider.getKeyByKeyId(jwt.getKeyId());
+            Algorithm algorithm = Algorithm.RSA256(jwk.toRSAKey().toRSAPublicKey(), null);
+            algorithm.verify(jwt);
+        } catch (Exception e) {
+            throw new OAuth2IntrospectionException("Failed to verify token signature");
         }
-        throw new OAuth2IntrospectionException("Invalid client");
+    }
+
+    /**
+     * This method updates the JWK file with the public keys from Spring Auth Server.
+     * It sends a GET request to the Spring Auth Server to get the public keys.
+     */
+
+    private void springAuthServerUpdateJwk() {
+        String response = restTemplate.getForObject(springAuthServerKeysUri, String.class);
+        try {
+            PrintWriter printWriter = new PrintWriter(springJwkPath);
+            log.info("------ Spring Auth Server - JWK updated ------");
+            printWriter.println(response);
+            printWriter.close();
+        } catch (FileNotFoundException e) {
+            log.error(e.getMessage());
+        }
     }
 
     public void addIssuers(TrustedIssuer... trustedIssuers) {
